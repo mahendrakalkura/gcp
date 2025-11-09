@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"strings"
@@ -101,7 +100,7 @@ func main() {
 		return
 	}
 
-	fmt.Println("Fetching resources in parallel...\n")
+	fmt.Println("Fetching resources in parallel...")
 
 	// Parallel resource fetching
 	var wg sync.WaitGroup
@@ -188,7 +187,7 @@ func main() {
 
 // Get project ID from google.json file
 func getProjectIDFromJSON(filename string) (string, error) {
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return "", fmt.Errorf("failed to read credentials file: %w", err)
 	}
@@ -630,7 +629,7 @@ func listCloudNAT(ctx context.Context, projectID string) ([]Resource, error) {
 		}
 
 		for _, router := range pair.Value.Routers {
-			if router.Nats != nil && len(router.Nats) > 0 {
+			if len(router.Nats) > 0 {
 				for _, nat := range router.Nats {
 					resources = append(resources, Resource{
 						Type:     "Cloud NAT",
@@ -1030,7 +1029,7 @@ func (c *Cache) Get(projectID string) (*Cache, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	data, err := ioutil.ReadFile(c.cacheFile)
+	data, err := os.ReadFile(c.cacheFile)
 	if err != nil {
 		return nil, false
 	}
@@ -1066,7 +1065,7 @@ func (c *Cache) Set(projectID string, resources []Resource, totalCost float64) {
 		return
 	}
 
-	if err := ioutil.WriteFile(c.cacheFile, data, 0644); err != nil {
+	if err := os.WriteFile(c.cacheFile, data, 0644); err != nil {
 		log.Printf("Failed to write cache: %v", err)
 	}
 }
