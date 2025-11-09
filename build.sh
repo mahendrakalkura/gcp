@@ -1,11 +1,3 @@
-#!/bin/bash
-# Build script for GCP Resource Lister
-
-set -e
-
-echo "Building GCP Resource Lister..."
-
-# Build the binary
-go build -o main .
-
-echo "✓ Build complete: ./main"
+goimports -w .
+go mod tidy || (go get . && go mod tidy)
+go build -o ./main
