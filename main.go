@@ -787,6 +787,7 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 	// Try to fetch billing data from BigQuery export
 	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
+		log.Printf("Cannot create BigQuery client: %v", err)
 		return costs, 0.0
 	}
 	defer client.Close()
@@ -803,7 +804,11 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 	}
 
 	var totalCost float64
+	var lastError error
+
 	for _, tableName := range billingTables {
+		log.Printf("Trying BigQuery table: %s", tableName)
+
 		query := client.Query(fmt.Sprintf(`
 			SELECT
 				service.description as service_type,
@@ -820,9 +825,12 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 
 		it, err := query.Read(ctx)
 		if err != nil {
+			log.Printf("  ✗ Error querying table %s: %v", tableName, err)
+			lastError = err
 			continue // Try next table
 		}
 
+		rowCount := 0
 		for {
 			var row struct {
 				ServiceType    string  `bigquery:"service_type"`
@@ -838,9 +846,12 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 				break
 			}
 			if err != nil {
+				log.Printf("  ✗ Error reading row: %v", err)
+				lastError = err
 				continue
 			}
 
+			rowCount++
 			key := fmt.Sprintf("%s/%s/%s", row.ServiceType, row.Location, row.ResourceName)
 			costs[key] = CostData{
 				Amount:   row.Cost,
@@ -851,12 +862,18 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 		}
 
 		if totalCost > 0 {
+			log.Printf("  ✓ Found %d billing records, total cost: $%.2f", rowCount, totalCost)
 			break // Found data, no need to try other tables
+		} else {
+			log.Printf("  ✗ Table exists but no billing data found (may need 24hrs for initial data)")
 		}
 	}
 
 	// If BigQuery export not found, try using Cloud Billing API
 	if totalCost == 0 {
+		if lastError != nil {
+			log.Printf("BigQuery billing export not accessible. Last error: %v", lastError)
+		}
 		totalCost = fetchCostsFromBillingAPI(ctx, projectID, costs)
 	}
 
