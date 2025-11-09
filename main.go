@@ -13,6 +13,7 @@ import (
 
 	"cloud.google.com/go/bigquery"
 	billing "cloud.google.com/go/billing/apiv1"
+	"cloud.google.com/go/billing/apiv1/billingpb"
 	"cloud.google.com/go/compute/apiv1"
 	"cloud.google.com/go/compute/apiv1/computepb"
 	"cloud.google.com/go/functions/apiv1"
@@ -754,56 +755,190 @@ func listReservedIPs(ctx context.Context, projectID string) ([]Resource, error) 
 	return resources, nil
 }
 
-// Estimate costs using Cloud Billing API
+// Estimate costs using BigQuery billing export
 func estimateCosts(ctx context.Context, projectID string, resources []Resource) float64 {
-	// Try to get billing account
-	client, err := billing.NewCloudCatalogClient(ctx)
+	costs, totalCost := fetchBillingData(ctx, projectID)
+
+	// Map costs to resources
+	for i := range resources {
+		key := getResourceKey(resources[i])
+		if cost, ok := costs[key]; ok {
+			resources[i].MonthlyCost = cost.Amount
+			resources[i].CostCurrency = cost.Currency
+		}
+	}
+
+	return totalCost
+}
+
+type CostData struct {
+	Amount   float64
+	Currency string
+	SKU      string
+}
+
+func getResourceKey(r Resource) string {
+	// Create a unique key for the resource
+	return fmt.Sprintf("%s/%s/%s", r.Type, r.Location, r.Name)
+}
+
+func fetchBillingData(ctx context.Context, projectID string) (map[string]CostData, float64) {
+	costs := make(map[string]CostData)
+
+	// Try to fetch billing data from BigQuery export
+	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
-		log.Printf("Cannot fetch cost data (Cloud Billing API): %v", err)
+		return costs, 0.0
+	}
+	defer client.Close()
+
+	// Get current month date range
+	now := time.Now()
+	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	// Try common billing export table names
+	billingTables := []string{
+		"billing.gcp_billing_export_v1",
+		"billing_export.gcp_billing_export_v1",
+		projectID + ".billing.gcp_billing_export_v1",
+	}
+
+	var totalCost float64
+	for _, tableName := range billingTables {
+		query := client.Query(fmt.Sprintf(`
+			SELECT
+				service.description as service_type,
+				sku.description as sku_description,
+				location.location as location,
+				labels.value as resource_name,
+				SUM(cost) as cost,
+				currency
+			FROM `+"`%s`"+`
+			WHERE DATE(usage_start_time) >= DATE('%s')
+				AND cost > 0
+			GROUP BY service_type, sku_description, location, resource_name, currency
+		`, tableName, startOfMonth.Format("2006-01-02")))
+
+		it, err := query.Read(ctx)
+		if err != nil {
+			continue // Try next table
+		}
+
+		for {
+			var row struct {
+				ServiceType    string  `bigquery:"service_type"`
+				SKUDescription string  `bigquery:"sku_description"`
+				Location       string  `bigquery:"location"`
+				ResourceName   string  `bigquery:"resource_name"`
+				Cost           float64 `bigquery:"cost"`
+				Currency       string  `bigquery:"currency"`
+			}
+
+			err := it.Next(&row)
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				continue
+			}
+
+			key := fmt.Sprintf("%s/%s/%s", row.ServiceType, row.Location, row.ResourceName)
+			costs[key] = CostData{
+				Amount:   row.Cost,
+				Currency: row.Currency,
+				SKU:      row.SKUDescription,
+			}
+			totalCost += row.Cost
+		}
+
+		if totalCost > 0 {
+			break // Found data, no need to try other tables
+		}
+	}
+
+	// If BigQuery export not found, try using Cloud Billing API
+	if totalCost == 0 {
+		totalCost = fetchCostsFromBillingAPI(ctx, projectID, costs)
+	}
+
+	return costs, totalCost
+}
+
+func fetchCostsFromBillingAPI(ctx context.Context, projectID string, costs map[string]CostData) float64 {
+	// Get billing account for the project
+	client, err := billing.NewCloudBillingClient(ctx)
+	if err != nil {
 		return 0.0
 	}
 	defer client.Close()
 
-	// For now, return 0 as actual cost calculation requires SKU mapping
-	// This would need significant additional implementation
+	req := &billingpb.GetProjectBillingInfoRequest{
+		Name: fmt.Sprintf("projects/%s", projectID),
+	}
+
+	info, err := client.GetProjectBillingInfo(ctx, req)
+	if err != nil {
+		return 0.0
+	}
+
+	if info.BillingAccountName == "" {
+		return 0.0
+	}
+
+	// Note: The Cloud Billing API doesn't provide detailed month-to-date costs
+	// This would require BigQuery billing export to be enabled
+	// Return 0 and costs will remain empty
 	return 0.0
 }
 
 func displayResourceTable(resources []Resource, totalCost float64) {
-	// Simple custom table formatter
-	fmt.Printf("%-5s %-25s %-30s %-20s %-15s %s\n", "#", "Type", "Name", "Location", "Status", "Details")
-	fmt.Println(strings.Repeat("-", 140))
+	// Simple custom table formatter with cost column
+	fmt.Printf("%-5s %-22s %-28s %-18s %-12s %-12s %s\n", "#", "Type", "Name", "Location", "MTD Cost", "Status", "Details")
+	fmt.Println(strings.Repeat("-", 150))
 
 	// Group resources by type for summary
 	typeCount := make(map[string]int)
+	typeCost := make(map[string]float64)
 	for _, resource := range resources {
 		typeCount[resource.Type]++
+		typeCost[resource.Type] += resource.MonthlyCost
 	}
 
 	// Display rows
 	for i, resource := range resources {
 		name := resource.Name
-		if len(name) > 30 {
-			name = name[:27] + "..."
+		if len(name) > 28 {
+			name = name[:25] + "..."
 		}
 		location := resource.Location
-		if len(location) > 20 {
-			location = location[:17] + "..."
+		if len(location) > 18 {
+			location = location[:15] + "..."
 		}
 		status := resource.Status
-		if len(status) > 15 {
-			status = status[:12] + "..."
+		if len(status) > 12 {
+			status = status[:9] + "..."
 		}
 		details := resource.Details
-		if len(details) > 50 {
-			details = details[:47] + "..."
+		if len(details) > 45 {
+			details = details[:42] + "..."
 		}
 
-		fmt.Printf("%-5d %-25s %-30s %-20s %-15s %s\n",
+		// Format cost
+		costStr := "-"
+		if resource.MonthlyCost > 0 {
+			if resource.CostCurrency != "" {
+				costStr = fmt.Sprintf("%s %.2f", resource.CostCurrency, resource.MonthlyCost)
+			} else {
+				costStr = fmt.Sprintf("$%.2f", resource.MonthlyCost)
+			}
+		}
+
+		fmt.Printf("%-5d %-22s %-28s %-18s %-12s %-12s %s\n",
 			i+1,
 			resource.Type,
 			name,
 			location,
+			costStr,
 			status,
 			details,
 		)
@@ -811,19 +946,33 @@ func displayResourceTable(resources []Resource, totalCost float64) {
 
 	// Display summary
 	fmt.Println("\n" + strings.Repeat("─", 80))
-	fmt.Printf("SUMMARY: %d total resources\n", len(resources))
+	fmt.Printf("SUMMARY: %d total resources", len(resources))
+	if totalCost > 0 {
+		fmt.Printf(" | Month-to-Date Cost: $%.2f", totalCost)
+	}
+	fmt.Println()
 	fmt.Println(strings.Repeat("─", 80))
 
+	// Show cost breakdown by resource type
+	fmt.Printf("%-30s %10s %15s\n", "Resource Type", "Count", "MTD Cost")
+	fmt.Println(strings.Repeat("-", 60))
 	for resType, count := range typeCount {
-		fmt.Printf("  %-25s %3d\n", resType+":", count)
+		cost := typeCost[resType]
+		costStr := "-"
+		if cost > 0 {
+			costStr = fmt.Sprintf("$%.2f", cost)
+		}
+		fmt.Printf("%-30s %10d %15s\n", resType, count, costStr)
 	}
 
 	fmt.Println(strings.Repeat("─", 80))
 
 	if totalCost > 0 {
-		fmt.Printf("Estimated Monthly Cost: $%.2f USD\n", totalCost)
+		fmt.Printf("💰 Total Month-to-Date Cost: $%.2f USD\n", totalCost)
+		fmt.Println("\nNote: Costs are fetched from BigQuery billing export (current month)")
 	} else {
-		fmt.Println("Note: Enable Cloud Billing API for cost estimates")
+		fmt.Println("Note: Enable BigQuery billing export to see month-to-date costs")
+		fmt.Println("      Visit: https://console.cloud.google.com/billing/export")
 	}
 }
 

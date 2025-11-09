@@ -12,6 +12,7 @@ require (
 	cloud.google.com/go/run v1.12.1
 	cloud.google.com/go/storage v1.57.1
 	google.golang.org/api v0.250.0
+	google.golang.org/genproto v0.0.0-20250106144421-5f5ef82da422
 )
 
 require (

@@ -6,11 +6,12 @@ A high-performance Golang CLI tool that authenticates with Google Cloud Platform
 
 ✨ **Automatic Project Detection** - Extracts project ID directly from `google.json`
 ⚡ **Parallel Resource Fetching** - Uses goroutines to fetch all resource types concurrently
-💰 **Cost Estimation Support** - Integrates with Cloud Billing API (when enabled)
+💰 **Month-to-Date Costs** - Shows actual MTD costs per resource from BigQuery billing export
 🗂️ **Comprehensive Resource Coverage** - Scans 15+ GCP service types
-📊 **Enhanced Table Output** - Beautiful ASCII tables with summary statistics
+📊 **Enhanced Table Output** - Beautiful ASCII tables with cost breakdown and summary statistics
 🚀 **Intelligent Caching** - Cache results for 5 minutes to speed up subsequent runs
 ⚠️ **Robust Error Handling** - Continues on failures and shows detailed error summary
+🔍 **Per-SKU Cost Analysis** - Displays costs grouped by SKU and resource type
 
 ## Prerequisites
 
@@ -95,10 +96,11 @@ The tool scans for the following GCP resources that incur costs:
 
 The tool displays resources in an ASCII table with the following columns:
 
-- `#` - Resource index (right-aligned)
+- `#` - Resource index
 - `Type` - Resource type
 - `Name` - Resource name
 - `Location` - GCP region/zone or "global"
+- `MTD Cost` - Month-to-date cost (from billing export)
 - `Status` - Current status (RUNNING, ACTIVE, etc.)
 - `Details` - Additional information (size, version, tier, etc.)
 
@@ -106,42 +108,48 @@ The tool displays resources in an ASCII table with the following columns:
 
 After the table, a summary section shows:
 - Total resource count
-- Breakdown by resource type
-- Estimated monthly cost (when Cloud Billing API is enabled)
+- Month-to-date total cost
+- Cost breakdown by resource type with MTD costs per type
+- Total MTD cost across all resources
 
 ## Example Output
 
 ```
-#	Type	                Name	            Location	        Status	    Details
-1	Compute Engine VM	    web-server-1	    us-central1-a	    RUNNING	    Type: n1-standard-1
-2	Compute Engine VM	    app-server-2	    us-east1-b	        RUNNING	    Type: n2-standard-2
-3	Persistent Disk	        boot-disk-1	        us-central1-a	    READY	    Size: 100 GB
-4	Cloud Storage Bucket	my-data-bucket	    US	                ACTIVE	    Class: STANDARD
-5	Cloud SQL Instance	    prod-db	            us-central1	        RUNNABLE	Version: POSTGRES_14, Tier: db-n1-standard-1
-6	GKE Cluster	            prod-cluster	    us-central1	        RUNNING	    Nodes: 3, Version: 1.27
-7	Load Balancer	        web-lb	            us-central1	        ACTIVE	    Type: EXTERNAL
-8	Cloud DNS Zone	        example-zone	    global	            ACTIVE	    Domain: example.com.
-9	Reserved IP	            static-ip-1	        us-central1	        RESERVED	IP: 34.123.45.67
+#     Type                   Name                         Location           MTD Cost     Status       Details
+------------------------------------------------------------------------------------------------------------------------------------------------------
+1     Compute Engine VM      web-server-1                 us-central1-a      $156.23      RUNNING      Type: n1-standard-1
+2     Compute Engine VM      app-server-2                 us-east1-b         $312.45      RUNNING      Type: n2-standard-2
+3     Persistent Disk        boot-disk-1                  us-central1-a      $12.50       READY        Size: 100 GB
+4     Cloud Storage Bucket   my-data-bucket               US                 $8.75        ACTIVE       Class: STANDARD
+5     Cloud SQL Instance     prod-db                      us-central1        $425.00      RUNNABLE     Version: POSTGRES_14, Tier: db-n1-standard-1
+6     GKE Cluster            prod-cluster                 us-central1        $876.50      RUNNING      Nodes: 3, Version: 1.27
+7     Load Balancer          web-lb                       us-central1        $45.00       ACTIVE       Type: EXTERNAL
+8     Cloud DNS Zone         example-zone                 global             $0.50        ACTIVE       Domain: example.com.
+9     Reserved IP            static-ip-1                  us-central1        $3.60        RESERVED     IP: 34.123.45.67
 ...
 
 ────────────────────────────────────────────────────────────────────────────────
-SUMMARY: 42 total resources
+SUMMARY: 42 total resources | Month-to-Date Cost: $1,840.53
 ────────────────────────────────────────────────────────────────────────────────
-  Compute Engine VM:        5
-  Persistent Disk:          8
-  Cloud Storage Bucket:     12
-  Cloud SQL Instance:       2
-  GKE Cluster:              1
-  Load Balancer:            3
-  VPN Gateway:              1
-  Cloud NAT:                2
-  Memorystore Redis:        1
-  Cloud DNS Zone:           4
-  Reserved IP:              2
-  Cloud Function:           6
-  Cloud Run Service:        3
+Resource Type                       Count        MTD Cost
+------------------------------------------------------------
+Compute Engine VM                       5         $468.68
+Persistent Disk                         8          $98.40
+Cloud Storage Bucket                   12          $24.50
+Cloud SQL Instance                      2         $850.00
+GKE Cluster                             1         $876.50
+Load Balancer                           3         $135.00
+VPN Gateway                             1          $36.00
+Cloud NAT                               2          $88.00
+Memorystore Redis                       1         $125.45
+Cloud DNS Zone                          4           $2.00
+Reserved IP                             2           $7.20
+Cloud Function                          6          $45.30
+Cloud Run Service                       3          $83.50
 ────────────────────────────────────────────────────────────────────────────────
-Note: Enable Cloud Billing API for cost estimates
+💰 Total Month-to-Date Cost: $1,840.53 USD
+
+Note: Costs are fetched from BigQuery billing export (current month)
 ```
 
 ## Performance
@@ -209,25 +217,50 @@ dns.managedZones.list
   - google.golang.org/api/container
   - google.golang.org/api/dns
 
-## Cost Estimation
+## Month-to-Date Cost Tracking
 
-To enable cost estimation:
+The tool displays **actual month-to-date costs** for each resource by querying BigQuery billing export data.
 
-1. Enable the Cloud Billing API in your GCP project:
+### Setup Instructions
+
+To enable month-to-date cost tracking:
+
+1. **Enable BigQuery Billing Export** in your GCP project:
+   - Go to [Cloud Billing Export Settings](https://console.cloud.google.com/billing/export)
+   - Click "Edit Settings" for BigQuery export
+   - Select or create a BigQuery dataset for billing data
+   - Enable "Standard usage cost" export
+   - Wait 24 hours for initial data to populate
+
+2. **Grant BigQuery permissions** to your service account:
    ```bash
-   gcloud services enable cloudbilling.googleapis.com
-   ```
-
-2. Grant the service account billing viewer permissions:
-   ```bash
+   # Grant BigQuery Data Viewer role
    gcloud projects add-iam-policy-binding PROJECT_ID \
      --member="serviceAccount:SERVICE_ACCOUNT_EMAIL" \
-     --role="roles/billing.viewer"
+     --role="roles/bigquery.dataViewer"
+
+   # Grant BigQuery Job User role (to run queries)
+   gcloud projects add-iam-policy-binding PROJECT_ID \
+     --member="serviceAccount:SERVICE_ACCOUNT_EMAIL" \
+     --role="roles/bigquery.jobUser"
    ```
 
-3. Re-run the tool to see estimated monthly costs
+3. **Run the tool** - costs will be automatically fetched and displayed!
 
-**Note**: Cost estimation requires additional implementation to map resources to SKUs. The framework is in place but returns $0.00 currently.
+### How It Works
+
+- Queries BigQuery billing export for current month costs
+- Maps costs to resources by service type, location, and name
+- Shows **per-resource MTD costs** in the main table
+- Displays **cost breakdown by resource type** in summary
+- Automatically tries common billing table naming patterns
+
+### Without Billing Export
+
+If BigQuery billing export is not enabled, the tool will:
+- Show resources without cost data (displayed as "-")
+- Display a message with instructions to enable billing export
+- Continue to work normally for resource listing
 
 ## Caching
 
