@@ -4,6 +4,9 @@ google.json
 # Cache files
 .gcp-cache.json
 
+# Go dependencies (to avoid conflicts)
+go.sum
+
 # Binaries
 main
 *.exe

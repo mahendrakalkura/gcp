@@ -152,10 +152,13 @@ func main() {
 	var allResources []Resource
 	for result := range resultsChan {
 		if result.Error != nil {
-			errorsMu.Lock()
-			errors = append(errors, ErrorSummary{Service: result.Service, Error: result.Error})
-			errorsMu.Unlock()
-			fmt.Printf("⚠ %s: %v\n", result.Service, result.Error)
+			// Only show errors that are NOT "API not enabled" type errors
+			if !isAPINotEnabledError(result.Error) {
+				errorsMu.Lock()
+				errors = append(errors, ErrorSummary{Service: result.Service, Error: result.Error})
+				errorsMu.Unlock()
+				fmt.Printf("⚠ %s: %v\n", result.Service, result.Error)
+			}
 		} else {
 			fmt.Printf("✓ %s: found %d resources\n", result.Service, len(result.Resources))
 			allResources = append(allResources, result.Resources...)
@@ -853,6 +856,17 @@ func extractResourceName(fullName string) string {
 func retryableError(err error, operation string) error {
 	// Simple retry logic could be added here
 	return fmt.Errorf("%s: %w", operation, err)
+}
+
+func isAPINotEnabledError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := strings.ToLower(err.Error())
+	return strings.Contains(errMsg, "not enabled") ||
+		strings.Contains(errMsg, "api not enabled") ||
+		strings.Contains(errMsg, "disabled") ||
+		strings.Contains(errMsg, "enable it by visiting")
 }
 
 // Cache implementation
