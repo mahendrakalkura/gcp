@@ -1,6 +1,8 @@
 # Service account credentials
 google.json
-*.json
+
+# Cache files
+.gcp-cache.json
 
 # Binaries
 main
