@@ -13,7 +13,6 @@ import (
 
 	"cloud.google.com/go/bigquery"
 	billing "cloud.google.com/go/billing/apiv1"
-	"cloud.google.com/go/billing/apiv1/billingpb"
 	"cloud.google.com/go/compute/apiv1"
 	"cloud.google.com/go/compute/apiv1/computepb"
 	"cloud.google.com/go/functions/apiv1"
