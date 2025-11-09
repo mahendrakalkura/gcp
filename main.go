@@ -24,7 +24,6 @@ import (
 	"cloud.google.com/go/run/apiv2"
 	"cloud.google.com/go/run/apiv2/runpb"
 	"cloud.google.com/go/storage"
-	"github.com/olekukonko/tablewriter"
 	"google.golang.org/api/container/v1"
 	"google.golang.org/api/dns/v1"
 	"google.golang.org/api/iterator"
@@ -769,40 +768,44 @@ func estimateCosts(ctx context.Context, projectID string, resources []Resource) 
 }
 
 func displayResourceTable(resources []Resource, totalCost float64) {
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"#", "Type", "Name", "Location", "Status", "Details"})
+	// Simple custom table formatter
+	fmt.Printf("%-5s %-25s %-30s %-20s %-15s %s\n", "#", "Type", "Name", "Location", "Status", "Details")
+	fmt.Println(strings.Repeat("-", 140))
 
-	table.SetAutoWrapText(false)
-	table.SetAutoFormatHeaders(true)
-	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
-	table.SetCenterSeparator("")
-	table.SetColumnSeparator("")
-	table.SetRowSeparator("")
-	table.SetHeaderLine(false)
-	table.SetBorder(false)
-	table.SetTablePadding("\t")
-	table.SetNoWhiteSpace(true)
-
-	// Group resources by type
+	// Group resources by type for summary
 	typeCount := make(map[string]int)
 	for _, resource := range resources {
 		typeCount[resource.Type]++
 	}
 
-	// Add rows
+	// Display rows
 	for i, resource := range resources {
-		table.Append([]string{
-			fmt.Sprintf("%d", i+1),
-			resource.Type,
-			resource.Name,
-			resource.Location,
-			resource.Status,
-			resource.Details,
-		})
-	}
+		name := resource.Name
+		if len(name) > 30 {
+			name = name[:27] + "..."
+		}
+		location := resource.Location
+		if len(location) > 20 {
+			location = location[:17] + "..."
+		}
+		status := resource.Status
+		if len(status) > 15 {
+			status = status[:12] + "..."
+		}
+		details := resource.Details
+		if len(details) > 50 {
+			details = details[:47] + "..."
+		}
 
-	table.Render()
+		fmt.Printf("%-5d %-25s %-30s %-20s %-15s %s\n",
+			i+1,
+			resource.Type,
+			name,
+			location,
+			status,
+			details,
+		)
+	}
 
 	// Display summary
 	fmt.Println("\n" + strings.Repeat("─", 80))
