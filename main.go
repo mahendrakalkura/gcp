@@ -179,7 +179,7 @@ func main() {
 
 	// Fetch cost estimates
 	fmt.Println("\nFetching cost estimates...")
-	totalCost := estimateCosts(ctx, projectID, allResources)
+	allResources, totalCost := estimateCosts(ctx, projectID, allResources)
 
 	// Cache the results
 	cache.Set(projectID, allResources, totalCost)
@@ -1021,8 +1021,11 @@ func listVertexAICustomJobs(ctx context.Context, projectID string) ([]Resource, 
 }
 
 // Estimate costs using BigQuery billing export
-func estimateCosts(ctx context.Context, projectID string, resources []Resource) float64 {
+func estimateCosts(ctx context.Context, projectID string, resources []Resource) ([]Resource, float64) {
 	costs, totalCost := fetchBillingData(ctx, projectID)
+
+	// Track which cost keys have been matched to resources
+	matchedCosts := make(map[string]bool)
 
 	// Map costs to resources
 	matched := 0
@@ -1031,6 +1034,7 @@ func estimateCosts(ctx context.Context, projectID string, resources []Resource) 
 		if cost, ok := costs[key]; ok {
 			resources[i].MonthlyCost = cost.Amount
 			resources[i].CostCurrency = cost.Currency
+			matchedCosts[key] = true
 			matched++
 		}
 	}
@@ -1047,9 +1051,35 @@ func estimateCosts(ctx context.Context, projectID string, resources []Resource) 
 				log.Printf("    ✗ %s -> no match", key)
 			}
 		}
+
+		// Add virtual resources for unmatched costs (usage-based services)
+		log.Printf("  Debug: Checking for unmatched costs (usage-based services)...")
+		for key, cost := range costs {
+			if !matchedCosts[key] {
+				// Parse service/location from key
+				parts := strings.Split(key, "/")
+				if len(parts) == 2 {
+					serviceName := parts[0]
+					location := parts[1]
+
+					log.Printf("    ✓ Adding usage-based service: %s (%s) = $%.2f", serviceName, location, cost.Amount)
+
+					// Add as a virtual resource
+					resources = append(resources, Resource{
+						Type:         serviceName + " API Usage",
+						Name:         "API Calls",
+						Location:     location,
+						Status:       "ACTIVE",
+						Details:      fmt.Sprintf("Usage-based service (last 90 days)"),
+						MonthlyCost:  cost.Amount,
+						CostCurrency: cost.Currency,
+					})
+				}
+			}
+		}
 	}
 
-	return totalCost
+	return resources, totalCost
 }
 
 type CostData struct {

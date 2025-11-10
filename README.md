@@ -6,12 +6,12 @@ A high-performance Golang CLI tool that authenticates with Google Cloud Platform
 
 ✨ **Automatic Project Detection** - Extracts project ID directly from `google.json`
 ⚡ **Parallel Resource Fetching** - Uses goroutines to fetch all resource types concurrently
-💰 **Month-to-Date Costs** - Shows actual MTD costs per resource from BigQuery billing export
-🗂️ **Comprehensive Resource Coverage** - Scans 21 GCP service types
+💰 **Month-to-Date Costs** - Shows actual MTD costs per resource from BigQuery billing export (last 90 days)
+🗂️ **Comprehensive Resource Coverage** - Scans 21+ GCP service types including usage-based APIs
 📊 **Enhanced Table Output** - Beautiful ASCII tables with cost breakdown and summary statistics
 🚀 **Intelligent Caching** - Cache results for 5 minutes to speed up subsequent runs
 ⚠️ **Robust Error Handling** - Continues on failures and shows detailed error summary
-🔍 **Per-SKU Cost Analysis** - Displays costs grouped by SKU and resource type
+🔍 **Usage-Based API Detection** - Automatically detects and displays costs from usage-based APIs (Text-to-Speech, Gemini, etc.)
 
 ## Prerequisites
 
@@ -98,6 +98,15 @@ The tool scans for the following GCP resources that incur costs:
 - **Vertex AI Endpoints** - Deployed ML model endpoints
 - **Vertex AI Custom Jobs** - Training jobs and custom ML workloads
 
+### Usage-Based APIs
+The tool automatically detects and displays costs from usage-based APIs that don't have persistent resources:
+- **Cloud Text-to-Speech API** - API calls for text-to-speech conversion
+- **Gemini API** - API calls to Gemini language models
+- **Vertex AI API Usage** - Prediction, embedding, and other API usage costs
+- **Any other billable service** - Automatically discovered from billing data
+
+These services appear in the resource list with type "X API Usage" and show the total cost from the last 90 days, even though they don't have listable resources like VMs or buckets.
+
 ## Output Format
 
 ### Resource Table
@@ -155,9 +164,9 @@ Reserved IP                             2           $7.20
 Cloud Function                          6          $45.30
 Cloud Run Service                       3          $83.50
 ────────────────────────────────────────────────────────────────────────────────
-💰 Total Month-to-Date Cost: $1,840.53 USD
+💰 Total Cost (Last 90 Days): $1,840.53 USD
 
-Note: Costs are fetched from BigQuery billing export (current month)
+Note: Costs are fetched from BigQuery billing export (last 90 days)
 ```
 
 ## Performance
@@ -233,13 +242,13 @@ aiplatform.customJobs.list
   - google.golang.org/api/container
   - google.golang.org/api/dns
 
-## Month-to-Date Cost Tracking
+## Cost Tracking (Last 90 Days)
 
-The tool displays **actual month-to-date costs** for each resource by querying BigQuery billing export data.
+The tool displays **actual costs from the last 90 days** for each resource by querying BigQuery billing export data.
 
 ### Setup Instructions
 
-To enable month-to-date cost tracking:
+To enable cost tracking:
 
 1. **Enable BigQuery Billing Export** in your GCP project:
    - Go to [Cloud Billing Export Settings](https://console.cloud.google.com/billing/export)
@@ -265,11 +274,12 @@ To enable month-to-date cost tracking:
 
 ### How It Works
 
-- Queries BigQuery billing export for current month costs
-- Maps costs to resources by service type, location, and name
-- Shows **per-resource MTD costs** in the main table
+- Queries BigQuery billing export for **last 90 days** of costs
+- Maps costs to resources by service type and location
+- Shows **per-resource costs** in the main table
 - Displays **cost breakdown by resource type** in summary
-- Automatically tries common billing table naming patterns
+- Automatically discovers billing export tables with standard naming patterns
+- **Creates virtual resources** for usage-based APIs (Text-to-Speech, Gemini, etc.)
 
 ### Without Billing Export
 
