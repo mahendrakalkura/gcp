@@ -773,9 +773,9 @@ func listCloudBuildTriggers(ctx context.Context, projectID string) ([]Resource, 
 	}
 	defer client.Close()
 
+	// Use global location for Cloud Build triggers
 	req := &cloudbuildpb.ListBuildTriggersRequest{
-		Parent:    fmt.Sprintf("projects/%s/locations/-", projectID),
-		ProjectId: projectID,
+		Parent: fmt.Sprintf("projects/%s/locations/global", projectID),
 	}
 
 	it := client.ListBuildTriggers(ctx, req)
@@ -814,27 +814,37 @@ func listArtifactRegistryRepos(ctx context.Context, projectID string) ([]Resourc
 	}
 	defer client.Close()
 
-	req := &artifactregistrypb.ListRepositoriesRequest{
-		Parent: fmt.Sprintf("projects/%s/locations/-", projectID),
+	// Artifact Registry doesn't support wildcard locations, so query common regions
+	locations := []string{
+		"us-central1", "us-east1", "us-west1", "us-west2", "us-west3", "us-west4",
+		"europe-west1", "europe-west2", "europe-west3", "europe-west4",
+		"asia-east1", "asia-northeast1", "asia-southeast1",
 	}
 
-	it := client.ListRepositories(ctx, req)
-	for {
-		repo, err := it.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return resources, retryableError(err, "list Artifact Registry repositories")
+	for _, location := range locations {
+		req := &artifactregistrypb.ListRepositoriesRequest{
+			Parent: fmt.Sprintf("projects/%s/locations/%s", projectID, location),
 		}
 
-		resources = append(resources, Resource{
-			Type:     "Artifact Registry",
-			Name:     extractResourceName(repo.Name),
-			Location: extractLocation(repo.Name),
-			Status:   "ACTIVE",
-			Details:  fmt.Sprintf("Format: %s", repo.Format),
-		})
+		it := client.ListRepositories(ctx, req)
+		for {
+			repo, err := it.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				// Skip regions that don't have any repositories or have errors
+				break
+			}
+
+			resources = append(resources, Resource{
+				Type:     "Artifact Registry",
+				Name:     extractResourceName(repo.Name),
+				Location: extractLocation(repo.Name),
+				Status:   "ACTIVE",
+				Details:  fmt.Sprintf("Format: %s", repo.Format),
+			})
+		}
 	}
 
 	return resources, nil
@@ -849,8 +859,9 @@ func listVertexAIModels(ctx context.Context, projectID string) ([]Resource, erro
 	}
 	defer client.Close()
 
+	// Vertex AI requires 'global' location, not wildcard
 	req := &aiplatformpb.ListModelsRequest{
-		Parent: fmt.Sprintf("projects/%s/locations/-", projectID),
+		Parent: fmt.Sprintf("projects/%s/locations/global", projectID),
 	}
 
 	it := client.ListModels(ctx, req)
@@ -866,7 +877,7 @@ func listVertexAIModels(ctx context.Context, projectID string) ([]Resource, erro
 		resources = append(resources, Resource{
 			Type:     "Vertex AI Model",
 			Name:     extractResourceName(model.Name),
-			Location: extractLocation(model.Name),
+			Location: "global",
 			Status:   "ACTIVE",
 			Details:  fmt.Sprintf("Display: %s", model.DisplayName),
 		})
@@ -884,8 +895,9 @@ func listVertexAIEndpoints(ctx context.Context, projectID string) ([]Resource, e
 	}
 	defer client.Close()
 
+	// Vertex AI requires 'global' location, not wildcard
 	req := &aiplatformpb.ListEndpointsRequest{
-		Parent: fmt.Sprintf("projects/%s/locations/-", projectID),
+		Parent: fmt.Sprintf("projects/%s/locations/global", projectID),
 	}
 
 	it := client.ListEndpoints(ctx, req)
@@ -901,7 +913,7 @@ func listVertexAIEndpoints(ctx context.Context, projectID string) ([]Resource, e
 		resources = append(resources, Resource{
 			Type:     "Vertex AI Endpoint",
 			Name:     extractResourceName(endpoint.Name),
-			Location: extractLocation(endpoint.Name),
+			Location: "global",
 			Status:   "ACTIVE",
 			Details:  fmt.Sprintf("Display: %s", endpoint.DisplayName),
 		})
@@ -937,6 +949,47 @@ func getResourceKey(r Resource) string {
 	return fmt.Sprintf("%s/%s/%s", r.Type, r.Location, r.Name)
 }
 
+func discoverBillingTables(ctx context.Context, client *bigquery.Client, projectID string) []string {
+	var billingTables []string
+
+	// List all datasets in the project
+	it := client.Datasets(ctx)
+	for {
+		dataset, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			log.Printf("Error listing datasets: %v", err)
+			continue
+		}
+
+		// List tables in this dataset
+		tables := dataset.Tables(ctx)
+		for {
+			table, err := tables.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				log.Printf("Error listing tables in dataset %s: %v", dataset.DatasetID, err)
+				continue
+			}
+
+			// Check if table name matches billing export patterns
+			tableName := table.TableID
+			if strings.HasPrefix(tableName, "gcp_billing_export_v1_") ||
+				strings.HasPrefix(tableName, "gcp_billing_export_resource_v1_") {
+				fullTableName := fmt.Sprintf("%s.%s.%s", projectID, dataset.DatasetID, tableName)
+				log.Printf("  ✓ Found billing export table: %s", fullTableName)
+				billingTables = append(billingTables, fullTableName)
+			}
+		}
+	}
+
+	return billingTables
+}
+
 func fetchBillingData(ctx context.Context, projectID string) (map[string]CostData, float64) {
 	costs := make(map[string]CostData)
 
@@ -952,11 +1005,12 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 	now := time.Now()
 	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 
-	// Try common billing export table names
-	billingTables := []string{
-		"billing.gcp_billing_export_v1",
-		"billing_export.gcp_billing_export_v1",
-		projectID + ".billing.gcp_billing_export_v1",
+	// Discover billing export tables by listing all datasets and tables
+	billingTables := discoverBillingTables(ctx, client, projectID)
+
+	if len(billingTables) == 0 {
+		log.Printf("No billing export tables found. Please enable BigQuery billing export.")
+		return costs, 0.0
 	}
 
 	var totalCost float64

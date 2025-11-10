@@ -1,6 +1,6 @@
 module gcp-resource-lister
 
-go 1.25.0
+go 1.23
 
 require (
 	cloud.google.com/go/aiplatform v1.83.0
