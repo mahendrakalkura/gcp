@@ -10,9 +10,15 @@ import (
 	"sync"
 	"time"
 
+	aiplatform "cloud.google.com/go/aiplatform/apiv1"
+	"cloud.google.com/go/aiplatform/apiv1/aiplatformpb"
+	artifactregistry "cloud.google.com/go/artifactregistry/apiv1"
+	"cloud.google.com/go/artifactregistry/apiv1/artifactregistrypb"
 	"cloud.google.com/go/bigquery"
 	billing "cloud.google.com/go/billing/apiv1"
 	"cloud.google.com/go/billing/apiv1/billingpb"
+	cloudbuild "cloud.google.com/go/cloudbuild/apiv1/v2"
+	"cloud.google.com/go/cloudbuild/apiv1/v2/cloudbuildpb"
 	compute "cloud.google.com/go/compute/apiv1"
 	"cloud.google.com/go/compute/apiv1/computepb"
 	functions "cloud.google.com/go/functions/apiv1"
@@ -127,6 +133,10 @@ func main() {
 		{"Memorystore Redis", listMemorystore},
 		{"Cloud DNS Zones", listCloudDNS},
 		{"Reserved IP Addresses", listReservedIPs},
+		{"Cloud Build Triggers", listCloudBuildTriggers},
+		{"Artifact Registry Repositories", listArtifactRegistryRepos},
+		{"Vertex AI Models", listVertexAIModels},
+		{"Vertex AI Endpoints", listVertexAIEndpoints},
 	}
 
 	for _, svc := range services {
@@ -749,6 +759,152 @@ func listReservedIPs(ctx context.Context, projectID string) ([]Resource, error) 
 				Details:  fmt.Sprintf("IP: %s", ipAddr),
 			})
 		}
+	}
+
+	return resources, nil
+}
+
+func listCloudBuildTriggers(ctx context.Context, projectID string) ([]Resource, error) {
+	var resources []Resource
+
+	client, err := cloudbuild.NewClient(ctx)
+	if err != nil {
+		return resources, retryableError(err, "create Cloud Build client")
+	}
+	defer client.Close()
+
+	req := &cloudbuildpb.ListBuildTriggersRequest{
+		Parent:    fmt.Sprintf("projects/%s/locations/-", projectID),
+		ProjectId: projectID,
+	}
+
+	it := client.ListBuildTriggers(ctx, req)
+	for {
+		trigger, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return resources, retryableError(err, "list Cloud Build triggers")
+		}
+
+		disabled := "ENABLED"
+		if trigger.Disabled {
+			disabled = "DISABLED"
+		}
+
+		resources = append(resources, Resource{
+			Type:     "Cloud Build Trigger",
+			Name:     trigger.Name,
+			Location: extractLocation(trigger.Name),
+			Status:   disabled,
+			Details:  fmt.Sprintf("Trigger: %s", trigger.Description),
+		})
+	}
+
+	return resources, nil
+}
+
+func listArtifactRegistryRepos(ctx context.Context, projectID string) ([]Resource, error) {
+	var resources []Resource
+
+	client, err := artifactregistry.NewClient(ctx)
+	if err != nil {
+		return resources, retryableError(err, "create Artifact Registry client")
+	}
+	defer client.Close()
+
+	req := &artifactregistrypb.ListRepositoriesRequest{
+		Parent: fmt.Sprintf("projects/%s/locations/-", projectID),
+	}
+
+	it := client.ListRepositories(ctx, req)
+	for {
+		repo, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return resources, retryableError(err, "list Artifact Registry repositories")
+		}
+
+		resources = append(resources, Resource{
+			Type:     "Artifact Registry",
+			Name:     extractResourceName(repo.Name),
+			Location: extractLocation(repo.Name),
+			Status:   "ACTIVE",
+			Details:  fmt.Sprintf("Format: %s", repo.Format),
+		})
+	}
+
+	return resources, nil
+}
+
+func listVertexAIModels(ctx context.Context, projectID string) ([]Resource, error) {
+	var resources []Resource
+
+	client, err := aiplatform.NewModelClient(ctx)
+	if err != nil {
+		return resources, retryableError(err, "create Vertex AI Model client")
+	}
+	defer client.Close()
+
+	req := &aiplatformpb.ListModelsRequest{
+		Parent: fmt.Sprintf("projects/%s/locations/-", projectID),
+	}
+
+	it := client.ListModels(ctx, req)
+	for {
+		model, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return resources, retryableError(err, "list Vertex AI models")
+		}
+
+		resources = append(resources, Resource{
+			Type:     "Vertex AI Model",
+			Name:     extractResourceName(model.Name),
+			Location: extractLocation(model.Name),
+			Status:   "ACTIVE",
+			Details:  fmt.Sprintf("Display: %s", model.DisplayName),
+		})
+	}
+
+	return resources, nil
+}
+
+func listVertexAIEndpoints(ctx context.Context, projectID string) ([]Resource, error) {
+	var resources []Resource
+
+	client, err := aiplatform.NewEndpointClient(ctx)
+	if err != nil {
+		return resources, retryableError(err, "create Vertex AI Endpoint client")
+	}
+	defer client.Close()
+
+	req := &aiplatformpb.ListEndpointsRequest{
+		Parent: fmt.Sprintf("projects/%s/locations/-", projectID),
+	}
+
+	it := client.ListEndpoints(ctx, req)
+	for {
+		endpoint, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return resources, retryableError(err, "list Vertex AI endpoints")
+		}
+
+		resources = append(resources, Resource{
+			Type:     "Vertex AI Endpoint",
+			Name:     extractResourceName(endpoint.Name),
+			Location: extractLocation(endpoint.Name),
+			Status:   "ACTIVE",
+			Details:  fmt.Sprintf("Display: %s", endpoint.DisplayName),
+		})
 	}
 
 	return resources, nil

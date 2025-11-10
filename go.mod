@@ -3,8 +3,11 @@ module gcp-resource-lister
 go 1.25.0
 
 require (
+	cloud.google.com/go/aiplatform v1.83.0
+	cloud.google.com/go/artifactregistry v1.17.0
 	cloud.google.com/go/bigquery v1.72.0
 	cloud.google.com/go/billing v1.20.4
+	cloud.google.com/go/cloudbuild v1.20.0
 	cloud.google.com/go/compute v1.49.1
 	cloud.google.com/go/functions v1.19.7
 	cloud.google.com/go/pubsub v1.49.0
