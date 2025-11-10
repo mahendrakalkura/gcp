@@ -1183,18 +1183,20 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 			}
 		}
 
+		// Query for last 90 days to ensure we capture all recent billing data
+		// (current month might not have data yet, previous month should be complete)
+		ninetyDaysAgo := now.AddDate(0, 0, -90)
 		query := client.Query(fmt.Sprintf(`
 			SELECT
 				service.description as service_type,
-				sku.description as sku_description,
 				location.location as location,
 				SUM(cost) as cost,
 				currency
 			FROM `+"`%s`"+`
 			WHERE DATE(usage_start_time) >= DATE('%s')
 				AND cost > 0
-			GROUP BY service_type, sku_description, location, currency
-		`, tableName, startOfMonth.Format("2006-01-02")))
+			GROUP BY service_type, location, currency
+		`, tableName, ninetyDaysAgo.Format("2006-01-02")))
 
 		it, err := query.Read(ctx)
 		if err != nil {
@@ -1206,11 +1208,10 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 		rowCount := 0
 		for {
 			var row struct {
-				ServiceType    string  `bigquery:"service_type"`
-				SKUDescription string  `bigquery:"sku_description"`
-				Location       string  `bigquery:"location"`
-				Cost           float64 `bigquery:"cost"`
-				Currency       string  `bigquery:"currency"`
+				ServiceType string  `bigquery:"service_type"`
+				Location    string  `bigquery:"location"`
+				Cost        float64 `bigquery:"cost"`
+				Currency    string  `bigquery:"currency"`
 			}
 
 			err := it.Next(&row)
@@ -1224,11 +1225,11 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 			}
 
 			rowCount++
-			// Group costs by service type and location (without resource name since labels is complex)
+			// Group costs by service type and location
 			key := fmt.Sprintf("%s/%s", row.ServiceType, row.Location)
 
 			// Debug: show first few cost entries
-			if rowCount <= 5 {
+			if rowCount <= 10 {
 				log.Printf("  Debug: Cost entry #%d: %s / %s = $%.2f", rowCount, row.ServiceType, row.Location, row.Cost)
 			}
 
@@ -1237,20 +1238,20 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 				costs[key] = CostData{
 					Amount:   existing.Amount + row.Cost,
 					Currency: row.Currency,
-					SKU:      existing.SKU + ", " + row.SKUDescription,
+					SKU:      existing.SKU,
 				}
 			} else {
 				costs[key] = CostData{
 					Amount:   row.Cost,
 					Currency: row.Currency,
-					SKU:      row.SKUDescription,
+					SKU:      row.ServiceType,
 				}
 			}
 			totalCost += row.Cost
 		}
 
 		if totalCost > 0 {
-			log.Printf("  ✓ Found %d billing records, total cost: $%.2f", rowCount, totalCost)
+			log.Printf("  ✓ Found %d billing records from last 90 days, total cost: $%.2f", rowCount, totalCost)
 			// Show all unique cost keys for debugging
 			log.Printf("  Debug: Available cost keys:")
 			count := 0
@@ -1265,73 +1266,7 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 			}
 			break // Found data, no need to try other tables
 		} else {
-			log.Printf("  ✗ No billing data found for current month (started: %s)", startOfMonth.Format("2006-01-02"))
-
-			// Try last 30 days as fallback
-			log.Printf("  Trying last 30 days as fallback...")
-			thirtyDaysAgo := now.AddDate(0, 0, -30)
-
-			fallbackQuery := client.Query(fmt.Sprintf(`
-				SELECT
-					service.description as service_type,
-					sku.description as sku_description,
-					location.location as location,
-					SUM(cost) as cost,
-					currency
-				FROM `+"`%s`"+`
-				WHERE DATE(usage_start_time) >= DATE('%s')
-					AND cost > 0
-				GROUP BY service_type, sku_description, location, currency
-			`, tableName, thirtyDaysAgo.Format("2006-01-02")))
-
-			fallbackIt, fallbackErr := fallbackQuery.Read(ctx)
-			if fallbackErr == nil {
-				fallbackRowCount := 0
-				for {
-					var row struct {
-						ServiceType    string  `bigquery:"service_type"`
-						SKUDescription string  `bigquery:"sku_description"`
-						Location       string  `bigquery:"location"`
-						Cost           float64 `bigquery:"cost"`
-						Currency       string  `bigquery:"currency"`
-					}
-
-					err := fallbackIt.Next(&row)
-					if err == iterator.Done {
-						break
-					}
-					if err != nil {
-						break
-					}
-
-					fallbackRowCount++
-					key := fmt.Sprintf("%s/%s", row.ServiceType, row.Location)
-
-					if fallbackRowCount <= 5 {
-						log.Printf("  Debug: Fallback cost entry #%d: %s / %s = $%.2f", fallbackRowCount, row.ServiceType, row.Location, row.Cost)
-					}
-
-					if existing, ok := costs[key]; ok {
-						costs[key] = CostData{
-							Amount:   existing.Amount + row.Cost,
-							Currency: row.Currency,
-							SKU:      existing.SKU + ", " + row.SKUDescription,
-						}
-					} else {
-						costs[key] = CostData{
-							Amount:   row.Cost,
-							Currency: row.Currency,
-							SKU:      row.SKUDescription,
-						}
-					}
-					totalCost += row.Cost
-				}
-
-				if totalCost > 0 {
-					log.Printf("  ✓ Found %d billing records from last 30 days, total cost: $%.2f", fallbackRowCount, totalCost)
-					break
-				}
-			}
+			log.Printf("  ✗ No billing data found for last 90 days")
 		}
 	}
 
