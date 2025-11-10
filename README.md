@@ -12,6 +12,7 @@ A high-performance Golang CLI tool that authenticates with Google Cloud Platform
 🚀 **Intelligent Caching** - Cache results for 5 minutes to speed up subsequent runs
 ⚠️ **Robust Error Handling** - Continues on failures and shows detailed error summary
 🔍 **Usage-Based API Detection** - Automatically detects and displays costs from usage-based APIs (Text-to-Speech, Gemini, etc.)
+🏷️ **Label Filtering & Grouping** - Filter resources by labels and group costs by label values (team, environment, project, etc.)
 
 ## Prerequisites
 
@@ -62,6 +63,56 @@ Scanning GCP resources for project: my-project-id
 ```
 
 The cache expires after 5 minutes and is stored in `.gcp-cache.json`.
+
+### Filter by Labels
+
+Filter resources by labels to focus on specific teams, environments, or projects:
+
+```bash
+# Show only resources with a specific label key
+./main --label=environment
+
+# Show only resources with a specific label key and value
+./main --label=environment:production
+
+# Show only resources tagged for a specific team
+./main --label=team:backend
+```
+
+### Group Costs by Labels
+
+View cost breakdown by label values to understand spending by team, environment, or any custom label:
+
+```bash
+# Group costs by environment label
+./main --group-by-label=environment
+
+# Group costs by team label
+./main --group-by-label=team
+
+# Group costs by project label
+./main --group-by-label=project
+```
+
+This will display the regular resource table followed by a cost summary grouped by the specified label:
+
+```
+────────────────────────────────────────────────────────────────────────────────
+Cost Breakdown by Label: environment
+────────────────────────────────────────────────────────────────────────────────
+Label Value                        Count     Total Cost
+------------------------------------------------------------
+production                            12        $1,245.50
+staging                                8          $432.80
+development                            5          $162.23
+(no label)                             3           $45.00
+────────────────────────────────────────────────────────────────────────────────
+```
+
+**Supported Resources with Labels:**
+- Compute Engine VMs
+- Persistent Disks
+- Cloud Storage Buckets
 
 ## Supported Resources
 

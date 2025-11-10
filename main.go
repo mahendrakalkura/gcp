@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -56,6 +57,7 @@ type Resource struct {
 	Details      string
 	MonthlyCost  float64
 	CostCurrency string
+	Labels       map[string]string
 }
 
 type ResourceResult struct {
@@ -80,6 +82,11 @@ type Cache struct {
 }
 
 func main() {
+	// Parse command-line flags
+	labelFilter := flag.String("label", "", "Filter resources by label (format: key:value or key)")
+	groupByLabel := flag.String("group-by-label", "", "Group cost breakdown by label key")
+	flag.Parse()
+
 	ctx := context.Background()
 
 	// Check if google.json exists
@@ -97,6 +104,12 @@ func main() {
 	}
 
 	fmt.Printf("Scanning GCP resources for project: %s\n", projectID)
+	if *labelFilter != "" {
+		fmt.Printf("Filtering by label: %s\n", *labelFilter)
+	}
+	if *groupByLabel != "" {
+		fmt.Printf("Grouping costs by label: %s\n", *groupByLabel)
+	}
 
 	// Check cache first
 	cache := NewCache(".gcp-cache.json", 5*time.Minute)
@@ -181,12 +194,26 @@ func main() {
 	fmt.Println("\nFetching cost estimates...")
 	allResources, totalCost := estimateCosts(ctx, projectID, allResources)
 
+	// Apply label filter if specified
+	if *labelFilter != "" {
+		allResources = filterResourcesByLabel(allResources, *labelFilter)
+		// Recalculate total cost after filtering
+		totalCost = 0
+		for _, r := range allResources {
+			totalCost += r.MonthlyCost
+		}
+	}
+
 	// Cache the results
 	cache.Set(projectID, allResources, totalCost)
 
 	// Display results
 	fmt.Printf("\n\nFound %d billable resources:\n\n", len(allResources))
-	displayResourceTable(allResources, totalCost)
+	if *groupByLabel != "" {
+		displayResourceTableWithLabelGrouping(allResources, totalCost, *groupByLabel)
+	} else {
+		displayResourceTable(allResources, totalCost)
+	}
 
 	// Display error summary if any
 	if len(errors) > 0 {
@@ -251,12 +278,21 @@ func listComputeInstances(ctx context.Context, projectID string) ([]Resource, er
 				machineType = parts[len(parts)-1]
 			}
 
+			// Extract labels
+			labels := make(map[string]string)
+			if instance.Labels != nil {
+				for k, v := range instance.Labels {
+					labels[k] = v
+				}
+			}
+
 			resources = append(resources, Resource{
 				Type:     "Compute Engine VM",
 				Name:     getStringValue(instance.Name),
 				Location: pair.Key,
 				Status:   status,
 				Details:  fmt.Sprintf("Type: %s", machineType),
+				Labels:   labels,
 			})
 		}
 	}
@@ -298,12 +334,21 @@ func listComputeDisks(ctx context.Context, projectID string) ([]Resource, error)
 				status = *disk.Status
 			}
 
+			// Extract labels
+			labels := make(map[string]string)
+			if disk.Labels != nil {
+				for k, v := range disk.Labels {
+					labels[k] = v
+				}
+			}
+
 			resources = append(resources, Resource{
 				Type:     "Persistent Disk",
 				Name:     getStringValue(disk.Name),
 				Location: pair.Key,
 				Status:   status,
 				Details:  fmt.Sprintf("Size: %d GB", size),
+				Labels:   labels,
 			})
 		}
 	}
@@ -330,12 +375,21 @@ func listStorageBuckets(ctx context.Context, projectID string) ([]Resource, erro
 			return resources, retryableError(err, "list buckets")
 		}
 
+		// Extract labels
+		labels := make(map[string]string)
+		if attrs.Labels != nil {
+			for k, v := range attrs.Labels {
+				labels[k] = v
+			}
+		}
+
 		resources = append(resources, Resource{
 			Type:     "Cloud Storage Bucket",
 			Name:     attrs.Name,
 			Location: attrs.Location,
 			Status:   "ACTIVE",
 			Details:  fmt.Sprintf("Class: %s", attrs.StorageClass),
+			Labels:   labels,
 		})
 	}
 
@@ -1092,27 +1146,27 @@ func getResourceKey(r Resource) string {
 	// Create a key matching the BigQuery billing data (service type and location)
 	// Map resource types to billing service descriptions
 	serviceMap := map[string]string{
-		"Compute Engine VM":      "Compute Engine",
-		"Persistent Disk":        "Compute Engine",
-		"Cloud Storage Bucket":   "Cloud Storage",
-		"Cloud SQL Instance":     "Cloud SQL",
-		"GKE Cluster":            "Kubernetes Engine",
-		"BigQuery Dataset":       "BigQuery",
-		"Cloud Function":         "Cloud Functions",
-		"Cloud Run Service":      "Cloud Run",
-		"Pub/Sub Topic":          "Cloud Pub/Sub",
-		"Load Balancer":          "Compute Engine",
-		"VPN Gateway":            "Compute Engine",
-		"Cloud NAT":              "Compute Engine",
-		"Memorystore Redis":      "Cloud Memorystore for Redis",
-		"Cloud DNS Zone":         "Cloud DNS",
-		"Reserved IP":            "Compute Engine",
-		"Cloud Build Trigger":    "Cloud Build",
-		"Cloud Build Run":        "Cloud Build",
-		"Artifact Registry":      "Artifact Registry",
-		"Vertex AI Model":        "Vertex AI",
-		"Vertex AI Endpoint":     "Vertex AI",
-		"Vertex AI Custom Job":   "Vertex AI",
+		"Compute Engine VM":    "Compute Engine",
+		"Persistent Disk":      "Compute Engine",
+		"Cloud Storage Bucket": "Cloud Storage",
+		"Cloud SQL Instance":   "Cloud SQL",
+		"GKE Cluster":          "Kubernetes Engine",
+		"BigQuery Dataset":     "BigQuery",
+		"Cloud Function":       "Cloud Functions",
+		"Cloud Run Service":    "Cloud Run",
+		"Pub/Sub Topic":        "Cloud Pub/Sub",
+		"Load Balancer":        "Compute Engine",
+		"VPN Gateway":          "Compute Engine",
+		"Cloud NAT":            "Compute Engine",
+		"Memorystore Redis":    "Cloud Memorystore for Redis",
+		"Cloud DNS Zone":       "Cloud DNS",
+		"Reserved IP":          "Compute Engine",
+		"Cloud Build Trigger":  "Cloud Build",
+		"Cloud Build Run":      "Cloud Build",
+		"Artifact Registry":    "Artifact Registry",
+		"Vertex AI Model":      "Vertex AI",
+		"Vertex AI Endpoint":   "Vertex AI",
+		"Vertex AI Custom Job": "Vertex AI",
 	}
 
 	serviceType := r.Type
@@ -1336,6 +1390,75 @@ func fetchCostsFromBillingAPI(ctx context.Context, projectID string, costs map[s
 	// This would require BigQuery billing export to be enabled
 	// Return 0 and costs will remain empty
 	return 0.0
+}
+
+// filterResourcesByLabel filters resources by label key:value or just key
+func filterResourcesByLabel(resources []Resource, filter string) []Resource {
+	var filtered []Resource
+	parts := strings.SplitN(filter, ":", 2)
+	key := parts[0]
+	value := ""
+	if len(parts) == 2 {
+		value = parts[1]
+	}
+
+	for _, r := range resources {
+		if r.Labels == nil {
+			continue
+		}
+		if labelValue, ok := r.Labels[key]; ok {
+			// If value is specified, match it; otherwise just check key exists
+			if value == "" || labelValue == value {
+				filtered = append(filtered, r)
+			}
+		}
+	}
+	return filtered
+}
+
+// displayResourceTableWithLabelGrouping displays resources grouped by a specific label
+func displayResourceTableWithLabelGrouping(resources []Resource, totalCost float64, labelKey string) {
+	// First, display the regular table
+	displayResourceTable(resources, totalCost)
+
+	// Then add label-based grouping
+	fmt.Printf("\n\n")
+	fmt.Println(strings.Repeat("─", 80))
+	fmt.Printf("Cost Breakdown by Label: %s\n", labelKey)
+	fmt.Println(strings.Repeat("─", 80))
+
+	labelCost := make(map[string]float64)
+	labelCount := make(map[string]int)
+
+	for _, r := range resources {
+		if r.Labels == nil {
+			continue
+		}
+		if labelValue, ok := r.Labels[labelKey]; ok {
+			labelCost[labelValue] += r.MonthlyCost
+			labelCount[labelValue]++
+		} else {
+			labelCost["(no label)"] += r.MonthlyCost
+			labelCount["(no label)"]++
+		}
+	}
+
+	fmt.Printf("%-30s %10s %15s\n", "Label Value", "Count", "Total Cost")
+	fmt.Println(strings.Repeat("-", 60))
+
+	for labelValue, cost := range labelCost {
+		count := labelCount[labelValue]
+		fmt.Printf("%-30s %10d %15s\n", labelValue, count, formatCost(cost))
+	}
+	fmt.Println(strings.Repeat("─", 80))
+}
+
+// formatCost formats a cost value as currency
+func formatCost(cost float64) string {
+	if cost == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("$%.2f", cost)
 }
 
 func displayResourceTable(resources []Resource, totalCost float64) {
