@@ -7,7 +7,7 @@ A high-performance Golang CLI tool that authenticates with Google Cloud Platform
 ✨ **Automatic Project Detection** - Extracts project ID directly from `google.json`
 ⚡ **Parallel Resource Fetching** - Uses goroutines to fetch all resource types concurrently
 💰 **Month-to-Date Costs** - Shows actual MTD costs per resource from BigQuery billing export
-🗂️ **Comprehensive Resource Coverage** - Scans 19 GCP service types
+🗂️ **Comprehensive Resource Coverage** - Scans 21 GCP service types
 📊 **Enhanced Table Output** - Beautiful ASCII tables with cost breakdown and summary statistics
 🚀 **Intelligent Caching** - Cache results for 5 minutes to speed up subsequent runs
 ⚠️ **Robust Error Handling** - Continues on failures and shows detailed error summary
@@ -92,9 +92,11 @@ The tool scans for the following GCP resources that incur costs:
 
 ### Development & AI/ML
 - **Cloud Build Triggers** - CI/CD build triggers (enabled/disabled status)
+- **Cloud Build Runs** - Actual build executions (last 30 days)
 - **Artifact Registry** - Docker, Maven, npm repositories
 - **Vertex AI Models** - Machine learning models
 - **Vertex AI Endpoints** - Deployed ML model endpoints
+- **Vertex AI Custom Jobs** - Training jobs and custom ML workloads
 
 ## Output Format
 
@@ -160,7 +162,7 @@ Note: Costs are fetched from BigQuery billing export (current month)
 
 ## Performance
 
-- **Parallel Fetching**: All 19 resource types are fetched concurrently using goroutines
+- **Parallel Fetching**: All 21 resource types are fetched concurrently using goroutines
 - **Smart Caching**: Results are cached for 5 minutes in `.gcp-cache.json`
 - **Fast Subsequent Runs**: Cached data is returned instantly without API calls
 
@@ -206,9 +208,11 @@ pubsub.topics.list
 redis.instances.list
 dns.managedZones.list
 cloudbuild.builds.list
+cloudbuild.triggers.list
 artifactregistry.repositories.list
 aiplatform.models.list
 aiplatform.endpoints.list
+aiplatform.customJobs.list
 ```
 
 ## Dependencies
