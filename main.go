@@ -110,7 +110,7 @@ func main() {
 
 	// Parallel resource fetching
 	var wg sync.WaitGroup
-	resultsChan := make(chan ResourceResult, 20)
+	resultsChan := make(chan ResourceResult, 22)
 	errors := []ErrorSummary{}
 	var errorsMu sync.Mutex
 
@@ -134,9 +134,11 @@ func main() {
 		{"Cloud DNS Zones", listCloudDNS},
 		{"Reserved IP Addresses", listReservedIPs},
 		{"Cloud Build Triggers", listCloudBuildTriggers},
+		{"Cloud Build Runs", listCloudBuildRuns},
 		{"Artifact Registry Repositories", listArtifactRegistryRepos},
 		{"Vertex AI Models", listVertexAIModels},
 		{"Vertex AI Endpoints", listVertexAIEndpoints},
+		{"Vertex AI Custom Jobs", listVertexAICustomJobs},
 	}
 
 	for _, svc := range services {
@@ -805,6 +807,61 @@ func listCloudBuildTriggers(ctx context.Context, projectID string) ([]Resource, 
 	return resources, nil
 }
 
+func listCloudBuildRuns(ctx context.Context, projectID string) ([]Resource, error) {
+	var resources []Resource
+
+	client, err := cloudbuild.NewClient(ctx)
+	if err != nil {
+		return resources, retryableError(err, "create Cloud Build client")
+	}
+	defer client.Close()
+
+	// List recent builds (last 30 days)
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
+
+	req := &cloudbuildpb.ListBuildsRequest{
+		Parent:   fmt.Sprintf("projects/%s/locations/global", projectID),
+		Filter:   fmt.Sprintf("create_time>\"%s\"", thirtyDaysAgo.Format(time.RFC3339)),
+		PageSize: 100,
+	}
+
+	it := client.ListBuilds(ctx, req)
+	for {
+		build, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return resources, retryableError(err, "list Cloud Build runs")
+		}
+
+		status := "UNKNOWN"
+		if build.Status != 0 {
+			status = build.Status.String()
+		}
+
+		// Calculate build duration if available
+		var duration string
+		if build.StartTime != nil && build.FinishTime != nil {
+			start := build.StartTime.AsTime()
+			finish := build.FinishTime.AsTime()
+			duration = fmt.Sprintf("Duration: %s", finish.Sub(start).Round(time.Second))
+		} else {
+			duration = "In progress"
+		}
+
+		resources = append(resources, Resource{
+			Type:     "Cloud Build Run",
+			Name:     build.Id,
+			Location: extractLocation(build.Name),
+			Status:   status,
+			Details:  duration,
+		})
+	}
+
+	return resources, nil
+}
+
 func listArtifactRegistryRepos(ctx context.Context, projectID string) ([]Resource, error) {
 	var resources []Resource
 
@@ -922,6 +979,52 @@ func listVertexAIEndpoints(ctx context.Context, projectID string) ([]Resource, e
 	return resources, nil
 }
 
+func listVertexAICustomJobs(ctx context.Context, projectID string) ([]Resource, error) {
+	var resources []Resource
+
+	client, err := aiplatform.NewJobClient(ctx)
+	if err != nil {
+		return resources, retryableError(err, "create Vertex AI Job client")
+	}
+	defer client.Close()
+
+	// Vertex AI requires specific location, try common regions
+	locations := []string{"us-central1", "us-east1", "us-west1", "europe-west1", "asia-northeast1"}
+
+	for _, location := range locations {
+		req := &aiplatformpb.ListCustomJobsRequest{
+			Parent: fmt.Sprintf("projects/%s/locations/%s", projectID, location),
+		}
+
+		it := client.ListCustomJobs(ctx, req)
+		for {
+			job, err := it.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				// Skip regions without access or resources
+				break
+			}
+
+			status := "UNKNOWN"
+			if job.State != 0 {
+				status = job.State.String()
+			}
+
+			resources = append(resources, Resource{
+				Type:     "Vertex AI Custom Job",
+				Name:     extractResourceName(job.Name),
+				Location: location,
+				Status:   status,
+				Details:  fmt.Sprintf("Display: %s", job.DisplayName),
+			})
+		}
+	}
+
+	return resources, nil
+}
+
 // Estimate costs using BigQuery billing export
 func estimateCosts(ctx context.Context, projectID string, resources []Resource) float64 {
 	costs, totalCost := fetchBillingData(ctx, projectID)
@@ -945,8 +1048,38 @@ type CostData struct {
 }
 
 func getResourceKey(r Resource) string {
-	// Create a unique key for the resource
-	return fmt.Sprintf("%s/%s/%s", r.Type, r.Location, r.Name)
+	// Create a key matching the BigQuery billing data (service type and location)
+	// Map resource types to billing service descriptions
+	serviceMap := map[string]string{
+		"Compute Engine VM":      "Compute Engine",
+		"Persistent Disk":        "Compute Engine",
+		"Cloud Storage Bucket":   "Cloud Storage",
+		"Cloud SQL Instance":     "Cloud SQL",
+		"GKE Cluster":            "Kubernetes Engine",
+		"BigQuery Dataset":       "BigQuery",
+		"Cloud Function":         "Cloud Functions",
+		"Cloud Run Service":      "Cloud Run",
+		"Pub/Sub Topic":          "Cloud Pub/Sub",
+		"Load Balancer":          "Compute Engine",
+		"VPN Gateway":            "Compute Engine",
+		"Cloud NAT":              "Compute Engine",
+		"Memorystore Redis":      "Cloud Memorystore for Redis",
+		"Cloud DNS Zone":         "Cloud DNS",
+		"Reserved IP":            "Compute Engine",
+		"Cloud Build Trigger":    "Cloud Build",
+		"Cloud Build Run":        "Cloud Build",
+		"Artifact Registry":      "Artifact Registry",
+		"Vertex AI Model":        "Vertex AI",
+		"Vertex AI Endpoint":     "Vertex AI",
+		"Vertex AI Custom Job":   "Vertex AI",
+	}
+
+	serviceType := r.Type
+	if mapped, ok := serviceMap[r.Type]; ok {
+		serviceType = mapped
+	}
+
+	return fmt.Sprintf("%s/%s", serviceType, r.Location)
 }
 
 func discoverBillingTables(ctx context.Context, client *bigquery.Client, projectID string) []string {
@@ -1024,13 +1157,12 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 				service.description as service_type,
 				sku.description as sku_description,
 				location.location as location,
-				labels.value as resource_name,
 				SUM(cost) as cost,
 				currency
 			FROM `+"`%s`"+`
 			WHERE DATE(usage_start_time) >= DATE('%s')
 				AND cost > 0
-			GROUP BY service_type, sku_description, location, resource_name, currency
+			GROUP BY service_type, sku_description, location, currency
 		`, tableName, startOfMonth.Format("2006-01-02")))
 
 		it, err := query.Read(ctx)
@@ -1046,7 +1178,6 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 				ServiceType    string  `bigquery:"service_type"`
 				SKUDescription string  `bigquery:"sku_description"`
 				Location       string  `bigquery:"location"`
-				ResourceName   string  `bigquery:"resource_name"`
 				Cost           float64 `bigquery:"cost"`
 				Currency       string  `bigquery:"currency"`
 			}
@@ -1062,11 +1193,21 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 			}
 
 			rowCount++
-			key := fmt.Sprintf("%s/%s/%s", row.ServiceType, row.Location, row.ResourceName)
-			costs[key] = CostData{
-				Amount:   row.Cost,
-				Currency: row.Currency,
-				SKU:      row.SKUDescription,
+			// Group costs by service type and location (without resource name since labels is complex)
+			key := fmt.Sprintf("%s/%s", row.ServiceType, row.Location)
+			if existing, ok := costs[key]; ok {
+				// Aggregate costs for the same service/location
+				costs[key] = CostData{
+					Amount:   existing.Amount + row.Cost,
+					Currency: row.Currency,
+					SKU:      existing.SKU + ", " + row.SKUDescription,
+				}
+			} else {
+				costs[key] = CostData{
+					Amount:   row.Cost,
+					Currency: row.Currency,
+					SKU:      row.SKUDescription,
+				}
 			}
 			totalCost += row.Cost
 		}
