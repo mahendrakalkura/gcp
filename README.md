@@ -7,7 +7,7 @@ A high-performance Golang CLI tool that authenticates with Google Cloud Platform
 ✨ **Automatic Project Detection** - Extracts project ID directly from `google.json`
 ⚡ **Parallel Resource Fetching** - Uses goroutines to fetch all resource types concurrently
 💰 **Month-to-Date Costs** - Shows actual MTD costs per resource from BigQuery billing export
-🗂️ **Comprehensive Resource Coverage** - Scans 15+ GCP service types
+🗂️ **Comprehensive Resource Coverage** - Scans 19 GCP service types
 📊 **Enhanced Table Output** - Beautiful ASCII tables with cost breakdown and summary statistics
 🚀 **Intelligent Caching** - Cache results for 5 minutes to speed up subsequent runs
 ⚠️ **Robust Error Handling** - Continues on failures and shows detailed error summary
@@ -90,6 +90,12 @@ The tool scans for the following GCP resources that incur costs:
 - **Cloud Run Services** - Containerized serverless applications
 - **Pub/Sub Topics** - Message queuing topics
 
+### Development & AI/ML
+- **Cloud Build Triggers** - CI/CD build triggers (enabled/disabled status)
+- **Artifact Registry** - Docker, Maven, npm repositories
+- **Vertex AI Models** - Machine learning models
+- **Vertex AI Endpoints** - Deployed ML model endpoints
+
 ## Output Format
 
 ### Resource Table
@@ -154,7 +160,7 @@ Note: Costs are fetched from BigQuery billing export (current month)
 
 ## Performance
 
-- **Parallel Fetching**: All 15 resource types are fetched concurrently using goroutines
+- **Parallel Fetching**: All 19 resource types are fetched concurrently using goroutines
 - **Smart Caching**: Results are cached for 5 minutes in `.gcp-cache.json`
 - **Fast Subsequent Runs**: Cached data is returned instantly without API calls
 
@@ -199,11 +205,14 @@ run.services.list
 pubsub.topics.list
 redis.instances.list
 dns.managedZones.list
+cloudbuild.builds.list
+artifactregistry.repositories.list
+aiplatform.models.list
+aiplatform.endpoints.list
 ```
 
 ## Dependencies
 
-- **tablewriter** - ASCII table formatting (github.com/olekukonko/tablewriter)
 - **Google Cloud Go SDKs** - Official GCP client libraries
   - cloud.google.com/go/compute
   - cloud.google.com/go/storage
@@ -213,6 +222,9 @@ dns.managedZones.list
   - cloud.google.com/go/pubsub
   - cloud.google.com/go/redis
   - cloud.google.com/go/billing
+  - cloud.google.com/go/aiplatform
+  - cloud.google.com/go/artifactregistry
+  - cloud.google.com/go/cloudbuild
   - google.golang.org/api/sqladmin
   - google.golang.org/api/container
   - google.golang.org/api/dns
