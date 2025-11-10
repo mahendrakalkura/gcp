@@ -988,51 +988,33 @@ func listVertexAICustomJobs(ctx context.Context, projectID string) ([]Resource, 
 	}
 	defer client.Close()
 
-	// Vertex AI requires specific location, try common regions
-	locations := []string{
-		"us-central1", "us-east1", "us-east4", "us-west1", "us-west2", "us-west3", "us-west4",
-		"europe-west1", "europe-west2", "europe-west3", "europe-west4", "europe-north1",
-		"asia-east1", "asia-northeast1", "asia-northeast2", "asia-northeast3", "asia-southeast1", "asia-southeast2",
-		"australia-southeast1", "southamerica-east1",
+	// Vertex AI custom jobs require 'global' location
+	req := &aiplatformpb.ListCustomJobsRequest{
+		Parent: fmt.Sprintf("projects/%s/locations/global", projectID),
 	}
 
-	for _, location := range locations {
-		req := &aiplatformpb.ListCustomJobsRequest{
-			Parent: fmt.Sprintf("projects/%s/locations/%s", projectID, location),
+	it := client.ListCustomJobs(ctx, req)
+	for {
+		job, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return resources, retryableError(err, "list Vertex AI custom jobs")
 		}
 
-		it := client.ListCustomJobs(ctx, req)
-		jobCount := 0
-		for {
-			job, err := it.Next()
-			if err == iterator.Done {
-				break
-			}
-			if err != nil {
-				// Log the error for debugging but skip regions without access
-				if !isAPINotEnabledError(err) {
-					log.Printf("  Debug: Error listing custom jobs in %s: %v", location, err)
-				}
-				break
-			}
-
-			jobCount++
-			status := "UNKNOWN"
-			if job.State != 0 {
-				status = job.State.String()
-			}
-
-			resources = append(resources, Resource{
-				Type:     "Vertex AI Custom Job",
-				Name:     extractResourceName(job.Name),
-				Location: location,
-				Status:   status,
-				Details:  fmt.Sprintf("Display: %s", job.DisplayName),
-			})
+		status := "UNKNOWN"
+		if job.State != 0 {
+			status = job.State.String()
 		}
-		if jobCount > 0 {
-			log.Printf("  Debug: Found %d custom jobs in %s", jobCount, location)
-		}
+
+		resources = append(resources, Resource{
+			Type:     "Vertex AI Custom Job",
+			Name:     extractResourceName(job.Name),
+			Location: "global",
+			Status:   status,
+			Details:  fmt.Sprintf("Display: %s", job.DisplayName),
+		})
 	}
 
 	return resources, nil
@@ -1181,15 +1163,23 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 	for _, tableName := range billingTables {
 		log.Printf("Trying BigQuery table: %s", tableName)
 
-		// First, check if table has any data at all
-		countQuery := client.Query(fmt.Sprintf(`SELECT COUNT(*) as total FROM `+"`%s`"+` LIMIT 1`, tableName))
-		countIt, err := countQuery.Read(ctx)
+		// First, check if table has any data at all and show date range
+		dateRangeQuery := client.Query(fmt.Sprintf(`
+			SELECT
+				COUNT(*) as total,
+				MIN(DATE(usage_start_time)) as min_date,
+				MAX(DATE(usage_start_time)) as max_date
+			FROM `+"`%s`", tableName))
+		dateIt, err := dateRangeQuery.Read(ctx)
 		if err == nil {
-			var countRow struct {
-				Total int64 `bigquery:"total"`
+			var dateRow struct {
+				Total   int64     `bigquery:"total"`
+				MinDate time.Time `bigquery:"min_date"`
+				MaxDate time.Time `bigquery:"max_date"`
 			}
-			if err := countIt.Next(&countRow); err == nil {
-				log.Printf("  Debug: Table has %d total rows", countRow.Total)
+			if err := dateIt.Next(&dateRow); err == nil {
+				log.Printf("  Debug: Table has %d rows from %s to %s", dateRow.Total, dateRow.MinDate.Format("2006-01-02"), dateRow.MaxDate.Format("2006-01-02"))
+				log.Printf("  Debug: Querying for data since %s", startOfMonth.Format("2006-01-02"))
 			}
 		}
 
@@ -1275,7 +1265,73 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 			}
 			break // Found data, no need to try other tables
 		} else {
-			log.Printf("  ✗ Table exists but no billing data found for current month (started: %s)", startOfMonth.Format("2006-01-02"))
+			log.Printf("  ✗ No billing data found for current month (started: %s)", startOfMonth.Format("2006-01-02"))
+
+			// Try last 30 days as fallback
+			log.Printf("  Trying last 30 days as fallback...")
+			thirtyDaysAgo := now.AddDate(0, 0, -30)
+
+			fallbackQuery := client.Query(fmt.Sprintf(`
+				SELECT
+					service.description as service_type,
+					sku.description as sku_description,
+					location.location as location,
+					SUM(cost) as cost,
+					currency
+				FROM `+"`%s`"+`
+				WHERE DATE(usage_start_time) >= DATE('%s')
+					AND cost > 0
+				GROUP BY service_type, sku_description, location, currency
+			`, tableName, thirtyDaysAgo.Format("2006-01-02")))
+
+			fallbackIt, fallbackErr := fallbackQuery.Read(ctx)
+			if fallbackErr == nil {
+				fallbackRowCount := 0
+				for {
+					var row struct {
+						ServiceType    string  `bigquery:"service_type"`
+						SKUDescription string  `bigquery:"sku_description"`
+						Location       string  `bigquery:"location"`
+						Cost           float64 `bigquery:"cost"`
+						Currency       string  `bigquery:"currency"`
+					}
+
+					err := fallbackIt.Next(&row)
+					if err == iterator.Done {
+						break
+					}
+					if err != nil {
+						break
+					}
+
+					fallbackRowCount++
+					key := fmt.Sprintf("%s/%s", row.ServiceType, row.Location)
+
+					if fallbackRowCount <= 5 {
+						log.Printf("  Debug: Fallback cost entry #%d: %s / %s = $%.2f", fallbackRowCount, row.ServiceType, row.Location, row.Cost)
+					}
+
+					if existing, ok := costs[key]; ok {
+						costs[key] = CostData{
+							Amount:   existing.Amount + row.Cost,
+							Currency: row.Currency,
+							SKU:      existing.SKU + ", " + row.SKUDescription,
+						}
+					} else {
+						costs[key] = CostData{
+							Amount:   row.Cost,
+							Currency: row.Currency,
+							SKU:      row.SKUDescription,
+						}
+					}
+					totalCost += row.Cost
+				}
+
+				if totalCost > 0 {
+					log.Printf("  ✓ Found %d billing records from last 30 days, total cost: $%.2f", fallbackRowCount, totalCost)
+					break
+				}
+			}
 		}
 	}
 
