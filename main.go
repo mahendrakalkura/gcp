@@ -1070,7 +1070,7 @@ func estimateCosts(ctx context.Context, projectID string, resources []Resource) 
 						Name:         "API Calls",
 						Location:     location,
 						Status:       "ACTIVE",
-						Details:      fmt.Sprintf("Usage-based service (last 90 days)"),
+						Details:      "Usage-based service (last 90 days)",
 						MonthlyCost:  cost.Amount,
 						CostCurrency: cost.Currency,
 					})
