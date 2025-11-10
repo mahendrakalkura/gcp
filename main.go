@@ -989,7 +989,12 @@ func listVertexAICustomJobs(ctx context.Context, projectID string) ([]Resource, 
 	defer client.Close()
 
 	// Vertex AI requires specific location, try common regions
-	locations := []string{"us-central1", "us-east1", "us-west1", "europe-west1", "asia-northeast1"}
+	locations := []string{
+		"us-central1", "us-east1", "us-east4", "us-west1", "us-west2", "us-west3", "us-west4",
+		"europe-west1", "europe-west2", "europe-west3", "europe-west4", "europe-north1",
+		"asia-east1", "asia-northeast1", "asia-northeast2", "asia-northeast3", "asia-southeast1", "asia-southeast2",
+		"australia-southeast1", "southamerica-east1",
+	}
 
 	for _, location := range locations {
 		req := &aiplatformpb.ListCustomJobsRequest{
@@ -997,16 +1002,21 @@ func listVertexAICustomJobs(ctx context.Context, projectID string) ([]Resource, 
 		}
 
 		it := client.ListCustomJobs(ctx, req)
+		jobCount := 0
 		for {
 			job, err := it.Next()
 			if err == iterator.Done {
 				break
 			}
 			if err != nil {
-				// Skip regions without access or resources
+				// Log the error for debugging but skip regions without access
+				if !isAPINotEnabledError(err) {
+					log.Printf("  Debug: Error listing custom jobs in %s: %v", location, err)
+				}
 				break
 			}
 
+			jobCount++
 			status := "UNKNOWN"
 			if job.State != 0 {
 				status = job.State.String()
@@ -1020,6 +1030,9 @@ func listVertexAICustomJobs(ctx context.Context, projectID string) ([]Resource, 
 				Details:  fmt.Sprintf("Display: %s", job.DisplayName),
 			})
 		}
+		if jobCount > 0 {
+			log.Printf("  Debug: Found %d custom jobs in %s", jobCount, location)
+		}
 	}
 
 	return resources, nil
@@ -1030,11 +1043,27 @@ func estimateCosts(ctx context.Context, projectID string, resources []Resource) 
 	costs, totalCost := fetchBillingData(ctx, projectID)
 
 	// Map costs to resources
+	matched := 0
 	for i := range resources {
 		key := getResourceKey(resources[i])
 		if cost, ok := costs[key]; ok {
 			resources[i].MonthlyCost = cost.Amount
 			resources[i].CostCurrency = cost.Currency
+			matched++
+		}
+	}
+
+	if len(costs) > 0 {
+		log.Printf("  Debug: Matched %d out of %d resources to billing data", matched, len(resources))
+		// Show first few resource keys for debugging
+		log.Printf("  Debug: Sample resource keys:")
+		for i := 0; i < len(resources) && i < 5; i++ {
+			key := getResourceKey(resources[i])
+			if cost, ok := costs[key]; ok {
+				log.Printf("    ✓ %s -> $%.2f", key, cost.Amount)
+			} else {
+				log.Printf("    ✗ %s -> no match", key)
+			}
 		}
 	}
 
@@ -1152,6 +1181,18 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 	for _, tableName := range billingTables {
 		log.Printf("Trying BigQuery table: %s", tableName)
 
+		// First, check if table has any data at all
+		countQuery := client.Query(fmt.Sprintf(`SELECT COUNT(*) as total FROM `+"`%s`"+` LIMIT 1`, tableName))
+		countIt, err := countQuery.Read(ctx)
+		if err == nil {
+			var countRow struct {
+				Total int64 `bigquery:"total"`
+			}
+			if err := countIt.Next(&countRow); err == nil {
+				log.Printf("  Debug: Table has %d total rows", countRow.Total)
+			}
+		}
+
 		query := client.Query(fmt.Sprintf(`
 			SELECT
 				service.description as service_type,
@@ -1195,6 +1236,12 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 			rowCount++
 			// Group costs by service type and location (without resource name since labels is complex)
 			key := fmt.Sprintf("%s/%s", row.ServiceType, row.Location)
+
+			// Debug: show first few cost entries
+			if rowCount <= 5 {
+				log.Printf("  Debug: Cost entry #%d: %s / %s = $%.2f", rowCount, row.ServiceType, row.Location, row.Cost)
+			}
+
 			if existing, ok := costs[key]; ok {
 				// Aggregate costs for the same service/location
 				costs[key] = CostData{
@@ -1214,9 +1261,21 @@ func fetchBillingData(ctx context.Context, projectID string) (map[string]CostDat
 
 		if totalCost > 0 {
 			log.Printf("  ✓ Found %d billing records, total cost: $%.2f", rowCount, totalCost)
+			// Show all unique cost keys for debugging
+			log.Printf("  Debug: Available cost keys:")
+			count := 0
+			for key := range costs {
+				count++
+				if count <= 10 {
+					log.Printf("    - %s", key)
+				}
+			}
+			if count > 10 {
+				log.Printf("    ... and %d more", count-10)
+			}
 			break // Found data, no need to try other tables
 		} else {
-			log.Printf("  ✗ Table exists but no billing data found (may need 24hrs for initial data)")
+			log.Printf("  ✗ Table exists but no billing data found for current month (started: %s)", startOfMonth.Format("2006-01-02"))
 		}
 	}
 
